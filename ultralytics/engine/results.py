@@ -203,6 +203,7 @@ class Results(SimpleClass):
         names (dict): Dictionary mapping class indices to class names.
         path (str): Path to the input image file.
         save_dir (str | None): Directory to save results.
+        dist (numpy.ndarray | None): Distance values for each detection.
 
     Methods:
         update: Updates the Results object with new detection data.
@@ -235,7 +236,7 @@ class Results(SimpleClass):
     """
 
     def __init__(
-        self, orig_img, path, names, boxes=None, masks=None, probs=None, keypoints=None, obb=None, speed=None
+        self, orig_img, path, names, boxes=None, masks=None, probs=None, keypoints=None, obb=None, speed=None, dists=None
     ) -> None:
         """
         Initialize the Results class for storing and manipulating inference results.
@@ -250,6 +251,7 @@ class Results(SimpleClass):
             keypoints (torch.Tensor | None): A 2D tensor of keypoint coordinates for each detection.
             obb (torch.Tensor | None): A 2D tensor of oriented bounding box coordinates for each detection.
             speed (Dict | None): A dictionary containing preprocess, inference, and postprocess speeds (ms/image).
+            dist (numpy.ndarray | None): A 1D tensor of distance values for each detection.
 
         Examples:
             >>> results = model("path/to/image.jpg")
@@ -272,10 +274,11 @@ class Results(SimpleClass):
         self.keypoints = Keypoints(keypoints, self.orig_shape) if keypoints is not None else None
         self.obb = OBB(obb, self.orig_shape) if obb is not None else None
         self.speed = speed if speed is not None else {"preprocess": None, "inference": None, "postprocess": None}
+        self.dists = dists
         self.names = names
         self.path = path
         self.save_dir = None
-        self._keys = "boxes", "masks", "probs", "keypoints", "obb"
+        self._keys = "boxes", "masks", "probs", "keypoints", "obb", "dist"
 
     def __getitem__(self, idx):
         """
@@ -451,7 +454,7 @@ class Results(SimpleClass):
             >>> results = model("path/to/image.jpg")
             >>> new_result = results[0].new()
         """
-        return Results(orig_img=self.orig_img, path=self.path, names=self.names, speed=self.speed)
+        return Results(orig_img=self.orig_img, path=self.path, names=self.names, speed=self.speed, dists=self.dists)
 
     def plot(
         self,
@@ -468,6 +471,7 @@ class Results(SimpleClass):
         boxes=True,
         masks=True,
         probs=True,
+        dists=True,
         show=False,
         save=False,
         filename=None,
@@ -549,7 +553,8 @@ class Results(SimpleClass):
             for i, d in enumerate(reversed(pred_boxes)):
                 c, d_conf, id = int(d.cls), float(d.conf) if conf else None, None if d.id is None else int(d.id.item())
                 name = ("" if id is None else f"id:{id} ") + names[c]
-                label = (f"{name} {d_conf:.2f}" if conf else name) if labels else None
+                dist = self.dists[i] if dists and self.dists is not None else None
+                label = (f"{name} {d_conf:.2f} {dist:.2f}" if conf else name) if labels else None
                 box = d.xyxyxyxy.reshape(-1, 4, 2).squeeze() if is_obb else d.xyxy.squeeze()
                 annotator.box_label(
                     box,

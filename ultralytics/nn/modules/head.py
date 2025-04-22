@@ -39,20 +39,20 @@ class Detect(nn.Module):
         self.nc = nc  # number of classes
         self.nl = len(ch)  # number of detection layers
         self.reg_max = 16  # DFL channels (ch[0] // 16 to scale 4/8/12/16/20 for n/s/m/l/x)
-        self.no = nc + self.reg_max * 4  # number of outputs per anchor
+        self.no = nc + self.reg_max * 4 + 1 # number of outputs per anchor
         self.stride = torch.zeros(self.nl)  # strides computed during build
-        c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc, 100))  # channels
+        c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc+1, 100))  # channels
         self.cv2 = nn.ModuleList(
             nn.Sequential(Conv(x, c2, 3), Conv(c2, c2, 3), nn.Conv2d(c2, 4 * self.reg_max, 1)) for x in ch
         )
         self.cv3 = (
-            nn.ModuleList(nn.Sequential(Conv(x, c3, 3), Conv(c3, c3, 3), nn.Conv2d(c3, self.nc, 1)) for x in ch)
+            nn.ModuleList(nn.Sequential(Conv(x, c3, 3), Conv(c3, c3, 3), nn.Conv2d(c3, self.nc+1, 1)) for x in ch)
             if self.legacy
             else nn.ModuleList(
                 nn.Sequential(
                     nn.Sequential(DWConv(x, x, 3), Conv(x, c3, 1)),
                     nn.Sequential(DWConv(c3, c3, 3), Conv(c3, c3, 1)),
-                    nn.Conv2d(c3, self.nc, 1),
+                    nn.Conv2d(c3, self.nc+1, 1),
                 )
                 for x in ch
             )
@@ -117,11 +117,12 @@ class Detect(nn.Module):
             self.anchors, self.strides = (x.transpose(0, 1) for x in make_anchors(x, self.stride, 0.5))
             self.shape = shape
 
-        if self.export and self.format in {"saved_model", "pb", "tflite", "edgetpu", "tfjs"}:  # avoid TF FlexSplitV ops
-            box = x_cat[:, : self.reg_max * 4]
-            cls = x_cat[:, self.reg_max * 4 :]
+        if self.export and self.format in {"saved_model", "pb", "tflite", "edgetpu", "tfjs"}:  # avoid TF FlexSplitV ops")
+            # box = x_cat[:, : self.reg_max * 4]
+            # cls = x_cat[:, self.reg_max * 4 :]
+            box, cls, dist = x_cat.split((4*self.reg_max, self.nc, 1), 1)
         else:
-            box, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
+            box, cls, dist = x_cat.split((self.reg_max * 4, self.nc, 1), 1)
 
         if self.export and self.format in {"tflite", "edgetpu"}:
             # Precompute normalization factor to increase numerical stability
@@ -135,11 +136,10 @@ class Detect(nn.Module):
             dbox = self.decode_bboxes(
                 self.dfl(box) * self.strides, self.anchors.unsqueeze(0) * self.strides, xywh=False
             )
-            return dbox.transpose(1, 2), cls.sigmoid().permute(0, 2, 1)
+            return dbox.transpose(1, 2), cls.sigmoid().permute(0, 2, 1), F.softplus(dist)
         else:
             dbox = self.decode_bboxes(self.dfl(box), self.anchors.unsqueeze(0)) * self.strides
-
-        return torch.cat((dbox, cls.sigmoid()), 1)
+        return torch.cat((dbox, cls.sigmoid(), F.softplus(dist)), dim=1) 
 
     def bias_init(self):
         """Initialize Detect() biases, WARNING: requires stride availability."""
@@ -164,23 +164,24 @@ class Detect(nn.Module):
         Post-processes YOLO model predictions.
 
         Args:
-            preds (torch.Tensor): Raw predictions with shape (batch_size, num_anchors, 4 + nc) with last dimension
+            preds (torch.Tensor): Raw predictions with shape (batch_size, num_anchors, 4 + nc + 1) with last dimension
                 format [x, y, w, h, class_probs].
             max_det (int): Maximum detections per image.
             nc (int, optional): Number of classes. Default: 80.
 
         Returns:
-            (torch.Tensor): Processed predictions with shape (batch_size, min(max_det, num_anchors), 6) and last
-                dimension format [x, y, w, h, max_class_prob, class_index].
+            (torch.Tensor): Processed predictions with shape (batch_size, min(max_det, num_anchors), 7) and last
+                dimension format [x, y, w, h, max_class_prob, class_index, dist].
         """
         batch_size, anchors, _ = preds.shape  # i.e. shape(16,8400,84)
-        boxes, scores = preds.split([4, nc], dim=-1)
+        boxes, scores, dist_all = preds.split([4, nc, 1], dim=-1)
         index = scores.amax(dim=-1).topk(min(max_det, anchors))[1].unsqueeze(-1)
         boxes = boxes.gather(dim=1, index=index.repeat(1, 1, 4))
         scores = scores.gather(dim=1, index=index.repeat(1, 1, nc))
         scores, index = scores.flatten(1).topk(min(max_det, anchors))
+        dist = dist_all.gather(dim=1, index=index) 
         i = torch.arange(batch_size)[..., None]  # batch indices
-        return torch.cat([boxes[i, index // nc], scores[..., None], (index % nc)[..., None].float()], dim=-1)
+        return torch.cat([boxes[i, index // nc], scores[..., None], (index % nc)[..., None].float(), dist.squeeze(-1)], dim=-1)
 
 
 class Segment(Detect):
@@ -872,7 +873,3 @@ class v10Detect(Detect):
             for x in ch
         )
         self.one2one_cv3 = copy.deepcopy(self.cv3)
-
-    def fuse(self):
-        """Removes the one2many head."""
-        self.cv2 = self.cv3 = nn.ModuleList([nn.Identity()] * self.nl)
