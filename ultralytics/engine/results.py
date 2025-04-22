@@ -203,7 +203,7 @@ class Results(SimpleClass):
         names (dict): Dictionary mapping class indices to class names.
         path (str): Path to the input image file.
         save_dir (str | None): Directory to save results.
-        dist (numpy.ndarray | None): Distance values for each detection.
+        dist (torch.Tensor | None): Distance values for each detection.
 
     Methods:
         update: Updates the Results object with new detection data.
@@ -251,7 +251,7 @@ class Results(SimpleClass):
             keypoints (torch.Tensor | None): A 2D tensor of keypoint coordinates for each detection.
             obb (torch.Tensor | None): A 2D tensor of oriented bounding box coordinates for each detection.
             speed (Dict | None): A dictionary containing preprocess, inference, and postprocess speeds (ms/image).
-            dist (numpy.ndarray | None): A 1D tensor of distance values for each detection.
+            dist (torch.Tensor | None): A 1D tensor of distance values for each detection.
 
         Examples:
             >>> results = model("path/to/image.jpg")
