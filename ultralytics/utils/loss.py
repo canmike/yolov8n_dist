@@ -171,6 +171,7 @@ class v8DetectionLoss:
         self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0)
         self.bbox_loss = BboxLoss(m.reg_max).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
+        self.distance_loss = torch.nn.MSELoss(reduction="mean")
 
     def preprocess(self, targets, batch_size, scale_tensor):
         """Preprocess targets by converting to tensor format and scaling coordinates."""
@@ -200,7 +201,7 @@ class v8DetectionLoss:
 
     def __call__(self, preds, batch):
         """Calculate the sum of the loss for box, cls and dfl multiplied by batch size."""
-        loss = torch.zeros(3, device=self.device)  # box, cls, dfl
+        loss = torch.zeros(4, device=self.device)  # box, cls, dfl, distance
         feats = preds[1] if isinstance(preds, tuple) else preds
         pred_distri, pred_scores, pred_distances = torch.cat([xi.view(feats[0].shape[0], self.no, -1) for xi in feats], 2).split(
             (self.reg_max * 4, self.nc, 1), 1
@@ -208,6 +209,7 @@ class v8DetectionLoss:
 
         pred_scores = pred_scores.permute(0, 2, 1).contiguous()
         pred_distri = pred_distri.permute(0, 2, 1).contiguous()
+        pred_distances = pred_distances.permute(0, 2, 1).contiguous()
 
         dtype = pred_scores.dtype
         batch_size = pred_scores.shape[0]
@@ -215,17 +217,17 @@ class v8DetectionLoss:
         anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
 
         # Targets
-        targets = torch.cat((batch["batch_idx"].view(-1, 1), batch["cls"].view(-1, 1), batch["bboxes"]), 1)
+        targets = torch.cat((batch["batch_idx"].view(-1, 1), batch["cls"].view(-1, 1), batch["bboxes"], batch["distances"].view(-1,1)), 1)
         targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
-        gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
-        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)
+        gt_labels, gt_bboxes, gt_distances = targets.split((1, 4, 1), dim=2)  # cls, xyxy, distance
+        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)        
 
         # Pboxes
         pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
         # dfl_conf = pred_distri.view(batch_size, -1, 4, self.reg_max).detach().softmax(-1)
         # dfl_conf = (dfl_conf.amax(-1).mean(-1) + dfl_conf.amax(-1).amin(-1)) / 2
 
-        _, target_bboxes, target_scores, fg_mask, _ = self.assigner(
+        _, target_bboxes, target_scores, fg_mask, target_gt_idx = self.assigner(
             # pred_scores.detach().sigmoid() * 0.8 + dfl_conf.unsqueeze(-1) * 0.2,
             pred_scores.detach().sigmoid(),
             (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
@@ -248,9 +250,28 @@ class v8DetectionLoss:
                 pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask
             )
 
+        # Distance loss
+        gt_dist_flat = gt_distances.squeeze(-1)  
+
+        # gather per‐anchor ground‐truth distance
+        tdist = gt_dist_flat.gather(1, target_gt_idx)   # [B, n_anchors]
+
+        # predicted distances: [B, n_anchors]
+        pred_dist_flat = pred_distances.squeeze(-1)
+
+        # only positives
+        pos = pos = fg_mask
+        if pos.any():
+            l_dist = self.distance_loss(pred_dist_flat[pos], tdist[pos])
+            # print(f"\n l_dist {l_dist.item():.3f} | {pred_dist_flat[pos].mean().item():.3f} | {pred_dist_flat[pos].std().item():.3f}")
+        else:
+            l_dist = torch.tensor(0.0, device=self.device)
+        loss[3] = l_dist
+
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain
         loss[2] *= self.hyp.dfl  # dfl gain
+        loss[3] *= l_dist * 1 # TODO: distance gain
 
         return loss * batch_size, loss.detach()  # loss(box, cls, dfl)
 
