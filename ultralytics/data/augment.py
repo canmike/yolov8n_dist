@@ -1238,13 +1238,14 @@ class RandomPerspective:
 
         segments = instances.segments
         keypoints = instances.keypoints
+        distances = instances.distances
         # Update bboxes if there are segments.
         if len(segments):
             bboxes, segments = self.apply_segments(segments, M)
 
         if keypoints is not None:
             keypoints = self.apply_keypoints(keypoints, M)
-        new_instances = Instances(bboxes, segments, keypoints, bbox_format="xyxy", normalized=False)
+        new_instances = Instances(bboxes, segments, keypoints, bbox_format="xyxy", normalized=False, distances=distances)
         # Clip
         new_instances.clip(*self.size)
 
@@ -2072,6 +2073,7 @@ class Format:
         labels["img"] = self._format_img(img)
         labels["cls"] = torch.from_numpy(cls) if nl else torch.zeros(nl)
         labels["bboxes"] = torch.from_numpy(instances.bboxes) if nl else torch.zeros((nl, 4))
+        labels["distances"] = torch.from_numpy(instances.distances) if nl else torch.zeros((nl, 1))
         if self.return_keypoint:
             labels["keypoints"] = torch.from_numpy(instances.keypoints)
             if self.normalize:

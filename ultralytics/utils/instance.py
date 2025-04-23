@@ -201,6 +201,7 @@ class Instances:
         keypoints (np.ndarray): Keypoints with shape (N, 17, 3) in format (x, y, visible).
         normalized (bool): Flag indicating whether the bounding box coordinates are normalized.
         segments (np.ndarray): Segments array with shape (N, M, 2) after resampling.
+        distances (np.ndarray): Distances array with shape (N, 1) for distance calculations.
 
     Methods:
         convert_bbox: Convert bounding box format.
@@ -223,7 +224,7 @@ class Instances:
         ... )
     """
 
-    def __init__(self, bboxes, segments=None, keypoints=None, bbox_format="xywh", normalized=True) -> None:
+    def __init__(self, bboxes, segments=None, keypoints=None, bbox_format="xywh", normalized=True, distances=None) -> None:
         """
         Initialize the object with bounding boxes, segments, and keypoints.
 
@@ -233,11 +234,13 @@ class Instances:
             keypoints (np.ndarray, optional): Keypoints, shape (N, 17, 3) in format (x, y, visible).
             bbox_format (str, optional): Format of bboxes.
             normalized (bool, optional): Whether the coordinates are normalized.
+            distances (np.ndarray, optional): Distances array, shape (N, 1).
         """
         self._bboxes = Bboxes(bboxes=bboxes, format=bbox_format)
         self.keypoints = keypoints
         self.normalized = normalized
         self.segments = segments
+        self.distances = distances
 
     def convert_bbox(self, format):
         """
@@ -341,12 +344,14 @@ class Instances:
         keypoints = self.keypoints[index] if self.keypoints is not None else None
         bboxes = self.bboxes[index]
         bbox_format = self._bboxes.format
+        distances = self.distances[index] if self.distances is not None else None
         return Instances(
             bboxes=bboxes,
             segments=segments,
             keypoints=keypoints,
             bbox_format=bbox_format,
             normalized=self.normalized,
+            distances=distances,
         )
 
     def flipud(self, h):
@@ -424,9 +429,11 @@ class Instances:
                 self.segments = self.segments[good]
             if self.keypoints is not None:
                 self.keypoints = self.keypoints[good]
+            if self.distances is not None:
+                self.distances = self.distances[good]
         return good
 
-    def update(self, bboxes, segments=None, keypoints=None):
+    def update(self, bboxes, segments=None, keypoints=None, distances=None):
         """
         Update instance variables.
 
@@ -440,6 +447,8 @@ class Instances:
             self.segments = segments
         if keypoints is not None:
             self.keypoints = keypoints
+        if distances is not None:
+            self.distances = distances
 
     def __len__(self):
         """Return the length of the instance list."""
@@ -476,6 +485,7 @@ class Instances:
         normalized = instances_list[0].normalized
 
         cat_boxes = np.concatenate([ins.bboxes for ins in instances_list], axis=axis)
+        cat_distances = np.concatenate([ins.distances for ins in instances_list], axis=axis) if instances_list[0].distances is not None else None
         seg_len = [b.segments.shape[1] for b in instances_list]
         if len(frozenset(seg_len)) > 1:  # resample segments if there's different length
             max_len = max(seg_len)
@@ -491,7 +501,7 @@ class Instances:
         else:
             cat_segments = np.concatenate([b.segments for b in instances_list], axis=axis)
         cat_keypoints = np.concatenate([b.keypoints for b in instances_list], axis=axis) if use_keypoint else None
-        return cls(cat_boxes, cat_segments, cat_keypoints, bbox_format, normalized)
+        return cls(cat_boxes, cat_segments, cat_keypoints, bbox_format, normalized, cat_distances)
 
     @property
     def bboxes(self):
