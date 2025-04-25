@@ -571,7 +571,7 @@ def compute_ap(recall, precision):
 
 
 def ap_per_class(
-    tp, conf, pred_cls, target_cls, plot=False, on_plot=None, save_dir=Path(), names={}, eps=1e-16, prefix=""
+    tp, conf, pred_cls, target_cls, pred_distances, target_distances, plot=False, on_plot=None, save_dir=Path(), names={}, eps=1e-16, prefix=""
 ):
     """
     Compute the average precision per class for object detection evaluation.
@@ -581,6 +581,8 @@ def ap_per_class(
         conf (np.ndarray): Array of confidence scores of the detections.
         pred_cls (np.ndarray): Array of predicted classes of the detections.
         target_cls (np.ndarray): Array of true classes of the detections.
+        pred_distances (np.ndarray): Array of predicted distances for each detection.
+        target_distances (np.ndarray): Array of true distances for each detection.
         plot (bool, optional): Whether to plot PR curves or not.
         on_plot (func, optional): A callback to pass plots path and data when they are rendered.
         save_dir (Path, optional): Directory to save the PR curves.
@@ -601,6 +603,7 @@ def ap_per_class(
         f1_curve (np.ndarray): F1-score curves for each class.
         x (np.ndarray): X-axis values for the curves.
         prec_values (np.ndarray): Precision values at mAP@0.5 for each class.
+        mae (np.ndarray): Mean Absolute Error for each class.
     """
     # Sort by objectness
     i = np.argsort(-conf)
@@ -615,6 +618,7 @@ def ap_per_class(
 
     # Average precision, precision and recall curves
     ap, p_curve, r_curve = np.zeros((nc, tp.shape[1])), np.zeros((nc, 1000)), np.zeros((nc, 1000))
+    distance_mae = np.zeros(nc)  # Initialize MAE array for each class
     for ci, c in enumerate(unique_classes):
         i = pred_cls == c
         n_l = nt[ci]  # number of labels
@@ -640,6 +644,10 @@ def ap_per_class(
             if j == 0:
                 prec_values.append(np.interp(x, mrec, mpre))  # precision at mAP@0.5
 
+        # Mean Absolute Error (MAE) for each class
+        mae_mask = tp[:, 0] & (pred_cls == c)
+        distance_mae[ci] = abs(target_distances[target_cls == c] - pred_distances[mae_mask]).mean()
+
     prec_values = np.array(prec_values) if prec_values else np.zeros((1, 1000))  # (nc, 1000)
 
     # Compute F1 (harmonic mean of precision and recall)
@@ -656,7 +664,7 @@ def ap_per_class(
     p, r, f1 = p_curve[:, i], r_curve[:, i], f1_curve[:, i]  # max-F1 precision, recall, F1 values
     tp = (r * nt).round()  # true positives
     fp = (tp / (p + eps) - tp).round()  # false positives
-    return tp, fp, p, r, f1, ap, unique_classes.astype(int), p_curve, r_curve, f1_curve, x, prec_values
+    return tp, fp, p, r, f1, ap, unique_classes.astype(int), p_curve, r_curve, f1_curve, x, prec_values, distance_mae
 
 
 class Metric(SimpleClass):
@@ -802,6 +810,7 @@ class Metric(SimpleClass):
                 - f1_curve (list): F1 curve for each class.
                 - px (list): X values for the curves.
                 - prec_values (list): Precision values for each class.
+                - distance_mae (list): Mean Absolute Error for each class.
         """
         (
             self.p,
@@ -814,6 +823,7 @@ class Metric(SimpleClass):
             self.f1_curve,
             self.px,
             self.prec_values,
+            self.distance_mae,
         ) = results
 
     @property
@@ -861,7 +871,7 @@ class DetMetrics(SimpleClass):
         self.speed = {"preprocess": 0.0, "inference": 0.0, "loss": 0.0, "postprocess": 0.0}
         self.task = "detect"
 
-    def process(self, tp, conf, pred_cls, target_cls, on_plot=None):
+    def process(self, tp, conf, pred_cls, target_cls, pred_distances, target_distances, on_plot=None):
         """
         Process predicted results for object detection and update metrics.
 
@@ -870,6 +880,8 @@ class DetMetrics(SimpleClass):
             conf (np.ndarray): Confidence array.
             pred_cls (np.ndarray): Predicted class indices array.
             target_cls (np.ndarray): Target class indices array.
+            pred_distances (np.ndarray): Predicted distances array.
+            target_distances (np.ndarray): Target distances array.
             on_plot (callable, optional): Function to call after plots are generated.
         """
         results = ap_per_class(
@@ -877,26 +889,29 @@ class DetMetrics(SimpleClass):
             conf,
             pred_cls,
             target_cls,
+            pred_distances,
+            target_distances,
             plot=self.plot,
             save_dir=self.save_dir,
             names=self.names,
             on_plot=on_plot,
-        )[2:]
+        )
         self.box.nc = len(self.names)
-        self.box.update(results)
+        self.box.update(results[2:])
+        self.distance_mae = results[-1]
 
     @property
     def keys(self):
         """Return a list of keys for accessing specific metrics."""
-        return ["metrics/precision(B)", "metrics/recall(B)", "metrics/mAP50(B)", "metrics/mAP50-95(B)"]
+        return ["metrics/precision(B)", "metrics/recall(B)", "metrics/mAP50(B)", "metrics/mAP50-95(B)", "metrics/dist_mae(B)"]
 
     def mean_results(self):
         """Calculate mean of detected objects & return precision, recall, mAP50, and mAP50-95."""
-        return self.box.mean_results()
+        return self.box.mean_results() + [self.distance_mae.mean()]
 
     def class_result(self, i):
         """Return the result of evaluating the performance of an object detection model on a specific class."""
-        return self.box.class_result(i)
+        return self.box.class_result(i) + [self.distance_mae[i]]
 
     @property
     def maps(self):

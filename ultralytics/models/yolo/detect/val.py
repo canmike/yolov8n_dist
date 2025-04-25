@@ -104,11 +104,11 @@ class DetectionValidator(BaseValidator):
         self.confusion_matrix = ConfusionMatrix(nc=self.nc, conf=self.args.conf)
         self.seen = 0
         self.jdict = []
-        self.stats = dict(tp=[], conf=[], pred_cls=[], target_cls=[], target_img=[])
+        self.stats = dict(tp=[], conf=[], pred_cls=[], target_cls=[], target_img=[], pred_distances=[], target_distances=[])
 
     def get_desc(self):
         """Return a formatted string summarizing class metrics of YOLO model."""
-        return ("%22s" + "%11s" * 6) % ("Class", "Images", "Instances", "Box(P", "R", "mAP50", "mAP50-95)")
+        return ("%22s" + "%11s" * 7) % ("Class", "Images", "Instances", "Box(P", "R", "mAP50", ")mAP50-95", "dMAE")
 
     def postprocess(self, preds):
         """
@@ -149,10 +149,11 @@ class DetectionValidator(BaseValidator):
         ori_shape = batch["ori_shape"][si]
         imgsz = batch["img"].shape[2:]
         ratio_pad = batch["ratio_pad"][si]
+        distances=batch["distances"][idx].squeeze(-1)
         if len(cls):
             bbox = ops.xywh2xyxy(bbox) * torch.tensor(imgsz, device=self.device)[[1, 0, 1, 0]]  # target boxes
             ops.scale_boxes(imgsz, bbox, ori_shape, ratio_pad=ratio_pad)  # native-space labels
-        return {"cls": cls, "bbox": bbox, "ori_shape": ori_shape, "imgsz": imgsz, "ratio_pad": ratio_pad}
+        return {"cls": cls, "bbox": bbox, "ori_shape": ori_shape, "imgsz": imgsz, "ratio_pad": ratio_pad, "distances": distances}
 
     def _prepare_pred(self, pred, pbatch):
         """
@@ -186,12 +187,14 @@ class DetectionValidator(BaseValidator):
                 conf=torch.zeros(0, device=self.device),
                 pred_cls=torch.zeros(0, device=self.device),
                 tp=torch.zeros(npr, self.niou, dtype=torch.bool, device=self.device),
+                pred_distances=torch.zeros(0, device=self.device),
             )
             pbatch = self._prepare_batch(si, batch)
-            cls, bbox = pbatch.pop("cls"), pbatch.pop("bbox")
+            cls, bbox, distances = pbatch.pop("cls"), pbatch.pop("bbox"), pbatch.pop("distances")
             nl = len(cls)
             stat["target_cls"] = cls
             stat["target_img"] = cls.unique()
+            stat["target_distances"] = distances
             if npr == 0:
                 if nl:
                     for k in self.stats.keys():
@@ -206,6 +209,7 @@ class DetectionValidator(BaseValidator):
             predn = self._prepare_pred(pred, pbatch)
             stat["conf"] = predn[:, 4]
             stat["pred_cls"] = predn[:, 5]
+            stat["pred_distances"] = predn[:, 6]
 
             # Evaluate
             if nl:
@@ -250,6 +254,7 @@ class DetectionValidator(BaseValidator):
         stats.pop("target_img", None)
         if len(stats):
             self.metrics.process(**stats, on_plot=self.on_plot)
+        # burda mae dondurursek okey
         return self.metrics.results_dict
 
     def print_results(self):

@@ -280,15 +280,33 @@ def non_max_suppression(
         if not x.shape[0]:
             continue
 
-        # Detections matrix nx6 (xyxy, conf, cls)
-        box, cls, mask = x.split((4, nc, nm), 1)
+        # Detections matrix: (x1,y1,x2,y2, conf, cls, dist, [mask...])
+        # Split extras so that distance is first channel of extras
+        box, cls, extras = x.split((4, nc, nm), 1)
+        # extras: [dist | mask1 | mask2 | …]
+        distance = extras[:, :1]                          # [na,1]
+        masks    = extras[:, 1:] if nm > 1 else extras[:, :0]  # [na, nm-1] or empty
 
         if multi_label:
             i, j = torch.where(cls > conf_thres)
-            x = torch.cat((box[i], x[i, 4 + j, None], j[:, None].float(), mask[i]), 1)
+            scores = x[i, 4 + j, None]
+            x = torch.cat((
+                box[i],              # [N_pos, 4]
+                scores,              # [N_pos, 1]
+                j[:, None].float(),  # [N_pos, 1]
+                distance[i],         # [N_pos, 1]
+                masks[i]             # [N_pos, nm-1]
+            ), dim=1)
         else:  # best class only
-            conf, j = cls.max(1, keepdim=True)
-            x = torch.cat((box, conf, j.float(), mask), 1)[conf.view(-1) > conf_thres]
+            conf, j       = cls.max(1, keepdim=True)
+            keep          = conf.view(-1) > conf_thres
+            x = torch.cat((
+                box,                 # [na, 4]
+                conf,                # [na, 1]
+                j.float(),           # [na, 1]
+                distance,            # [na, 1]
+                masks                # [na, nm-1]
+            ), dim=1)[keep]
 
         # Filter by class
         if classes is not None:
