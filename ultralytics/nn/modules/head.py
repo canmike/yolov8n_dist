@@ -136,10 +136,11 @@ class Detect(nn.Module):
             dbox = self.decode_bboxes(
                 self.dfl(box) * self.strides, self.anchors.unsqueeze(0) * self.strides, xywh=False
             )
-            return dbox.transpose(1, 2), cls.sigmoid().permute(0, 2, 1), F.softplus(dist)
+            return dbox.transpose(1, 2), torch.cat([cls.permute(0, 2, 1), dist.permute(0, 2, 1)], dim=2)
+            # return dbox.transpose(1, 2), cls.sigmoid().permute(0, 2, 1), dist
         else:
             dbox = self.decode_bboxes(self.dfl(box), self.anchors.unsqueeze(0)) * self.strides
-        return torch.cat((dbox, cls.sigmoid(), F.softplus(dist)), dim=1) 
+        return torch.cat((dbox, cls.sigmoid(), dist), dim=1) 
 
     def bias_init(self):
         """Initialize Detect() biases, WARNING: requires stride availability."""
